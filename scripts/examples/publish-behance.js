@@ -16,19 +16,8 @@ const path = require('path');
 const { humanDelay, humanClick, humanType, humanThink, humanBrowse } = require('./utils/human-like');
 
 function discoverCdpUrl() {
-  try {
-    const ps = execSync("ps aux | grep 'remote-debugging-port=' | grep -v grep", { encoding: 'utf8', timeout: 3000 });
-    const match = ps.match(/remote-debugging-port=(\d+)/);
-    if (match) return `http://127.0.0.1:${match[1]}`;
-  } catch {}
-  if (process.env.CDP_PORT) return `http://127.0.0.1:${process.env.CDP_PORT}`;
-  for (const port of [18800, 9222]) {
-    try {
-      execSync(`curl -s --max-time 1 http://127.0.0.1:${port}/json/version`, { encoding: 'utf8', timeout: 2000 });
-      return `http://127.0.0.1:${port}`;
-    } catch {}
-  }
-  throw new Error('CDP port not found');
+  const port = process.env.CDP_PORT || '18800';
+  return `http://127.0.0.1:${port}`;
 }
 
 function log(msg) { console.log(`[BE] ${msg}`); }

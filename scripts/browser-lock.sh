@@ -8,16 +8,20 @@
 #   browser-lock.sh status                     — show current state
 #
 # Environment:
-#   CDP_PORT    (default: 18800)
+#   CDP_PORT        (default: 18800) — set to your profile's cdpPort
+#   BROWSER_PROFILE (default: openclaw) — profile name for user-data + lock file
 #   CHROME_BIN  (default: auto-detect)
 #   HEADLESS    (default: auto — headless if no DISPLAY/macOS)
 
 set -euo pipefail
 
-LOCK_FILE="/tmp/openclaw-browser.lock"
+
 CDP_PORT="${CDP_PORT:-18800}"
-USER_DATA_DIR="$HOME/.openclaw/browser/openclaw/user-data"
-PID_FILE="/tmp/openclaw-browser-standalone.pid"
+BROWSER_PROFILE="${BROWSER_PROFILE:-openclaw}"
+USER_DATA_DIR="$HOME/.openclaw/browser/$BROWSER_PROFILE/user-data"
+LOCK_FILE="/tmp/openclaw-browser-${BROWSER_PROFILE}.lock"
+PID_FILE="/tmp/openclaw-browser-${BROWSER_PROFILE}.pid"
+
 DEFAULT_TIMEOUT=300  # 5 minutes
 
 # --- Auto-detect Chrome ---

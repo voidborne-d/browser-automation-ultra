@@ -14,11 +14,8 @@ const { execSync } = require('child_process');
 const { humanDelay, humanClick, humanType, humanThink, humanBrowse } = require('./utils/human-like');
 
 function getCdpUrl() {
-  try {
-    const ps = execSync("ps aux | grep 'openclaw.*remote-debugging-port' | grep -v grep", { encoding: 'utf8' });
-    const match = ps.match(/remote-debugging-port=(\d+)/);
-    return `http://127.0.0.1:${match ? match[1] : '18800'}`;
-  } catch { return 'http://127.0.0.1:18800'; }
+  const port = process.env.CDP_PORT || '18800';
+  return `http://127.0.0.1:${port}`;
 }
 
 function log(msg) { console.log(`[XHS-REPLY] ${msg}`); }

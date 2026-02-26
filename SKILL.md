@@ -39,6 +39,34 @@ Only one CDP client can connect at a time. `browser-lock.sh` handles the mutex.
 3. `chmod +x scripts/browser-lock.sh`
 4. Create `scripts/browser/` for your automation scripts
 
+## ⚠️ Multi-Profile: Set Environment Variables BEFORE Running
+
+When multiple agents share the same machine, each agent has its own browser profile and CDP port. **You MUST set these environment variables before running `browser-lock.sh`:**
+
+```bash
+export CDP_PORT=18801          # Must match your browser profile's cdpPort
+export BROWSER_PROFILE=auramate  # Must match your browser profile name
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CDP_PORT` | `18800` | CDP port of your browser profile |
+| `BROWSER_PROFILE` | `openclaw` | Profile name — controls user-data dir and lock file |
+
+**Why this matters:** Lock files are per-profile (`/tmp/openclaw-browser-<profile>.lock`), so different agents won't block each other. But if you forget to set `CDP_PORT`, your script will connect to port 18800 (the default `openclaw` profile) instead of your own — operating someone else's browser.
+
+Example per-agent setup:
+
+```bash
+# auramate agent (port 18801)
+export CDP_PORT=18801 BROWSER_PROFILE=auramate
+./scripts/browser-lock.sh run scripts/browser/task.js
+
+# sway agent (port 18802)
+export CDP_PORT=18802 BROWSER_PROFILE=sway
+./scripts/browser-lock.sh run scripts/browser/task.js
+```
+
 ## Core Workflow
 
 ### 1. Explore (browser tool, costs tokens)
@@ -58,8 +86,8 @@ function discoverCdpUrl() {
     const { execSync } = require('child_process');
     const ps = execSync("ps aux | grep 'remote-debugging-port' | grep -v grep", { encoding: 'utf8' });
     const match = ps.match(/remote-debugging-port=(\d+)/);
-    return `http://127.0.0.1:${match ? match[1] : '18800'}`;
-  } catch { return 'http://127.0.0.1:18800'; }
+    const port = process.env.CDP_PORT || '18800';
+    return `http://127.0.0.1:${port}`;
 }
 
 async function main() {
@@ -107,7 +135,7 @@ Manages CDP mutex between OpenClaw browser and Playwright scripts.
 ./scripts/browser-lock.sh status                     # show state
 ```
 
-Lock file: `/tmp/openclaw-browser.lock`. Stale locks auto-recover.
+Lock file: `/tmp/openclaw-browser-<profile>.lock` (per-profile). Stale locks auto-recover.
 
 ## Anti-Detection Rules (MANDATORY)
 
@@ -193,6 +221,7 @@ Add `jitterWait()` at script start to randomize execution time.
 
 | Var | Default | Description |
 |-----|---------|-------------|
-| `CDP_PORT` | auto-discover | Override CDP port |
+| `CDP_PORT` | 18800 | Must match your browser profile's cdpPort |
+| `BROWSER_PROFILE` | openclaw | Profile name (controls user-data dir + lock file) |
 | `CHROME_BIN` | auto-detect | Chrome binary path |
 | `HEADLESS` | auto | `true`/`false` to force headless |
