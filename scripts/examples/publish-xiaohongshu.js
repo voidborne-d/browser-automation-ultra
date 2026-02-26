@@ -50,7 +50,10 @@ async function addTopicTag(page, wantedTag) {
     return false;
   }, wantedTag);
 
-  if (matched) return 'matched';
+  if (matched) {
+    await humanDelay(300, 600); // wait for DOM to replace # with topic element
+    return 'matched';
+  }
 
   // Step 3: Expand "更多" and retry
   const expanded = await page.evaluate(() => {
@@ -78,7 +81,10 @@ async function addTopicTag(page, wantedTag) {
       return false;
     }, wantedTag);
 
-    if (matched) return 'matched-expanded';
+    if (matched) {
+      await humanDelay(300, 600);
+      return 'matched-expanded';
+    }
   }
 
   // Step 4: Not found — remove the "#" that the topic button inserted
@@ -186,18 +192,24 @@ async function main() {
       }
       log(`Tags: ${added}/${wantedTags.length} added`);
 
-      // Final cleanup: remove any leftover bare # or suggestion spans
+      // Final cleanup: remove ALL leftover bare # or suggestion spans
       await page.evaluate(() => {
         const editor = document.querySelector('[contenteditable="true"]');
         if (!editor) return;
         editor.querySelectorAll('.suggestion').forEach(s => s.remove());
         const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
-        while (walker.nextNode()) {
-          const node = walker.currentNode;
+        const nodes = [];
+        while (walker.nextNode()) nodes.push(walker.currentNode);
+        for (const node of nodes) {
           if (node.parentElement.closest('.tiptap-topic')) continue;
           if (node.parentElement.closest('.content-hide')) continue;
-          // Remove standalone # not part of topics
-          node.textContent = node.textContent.replace(/(?<!\S)#(?!\S)/g, '').replace(/\s{2,}/g, ' ');
+          // Remove ALL # characters from non-topic text nodes
+          const cleaned = node.textContent.replace(/#/g, '').replace(/\s{2,}/g, ' ');
+          if (cleaned.trim()) {
+            node.textContent = cleaned;
+          } else {
+            node.remove();
+          }
         }
         editor.dispatchEvent(new Event('input', { bubbles: true }));
       });
