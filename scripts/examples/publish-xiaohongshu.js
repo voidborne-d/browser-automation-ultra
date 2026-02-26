@@ -16,7 +16,7 @@ const { chromium } = require('playwright');
 const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const { humanDelay, humanClick, humanType, humanFillContentEditable, humanBrowse, humanThink } = require('./utils/human-like');
+const { humanDelay, humanClick, humanType, humanFillContentEditable, humanBrowse, humanThink } = require('../utils/human-like');
 
 function getCdpUrl() {
   const port = process.env.CDP_PORT || '18800';

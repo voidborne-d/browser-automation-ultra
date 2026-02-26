@@ -77,17 +77,20 @@ Use the OpenClaw `browser` tool (snapshot/act) to figure out a workflow. Note se
 
 Convert steps into a script. Save to `scripts/browser/<verb>-<target>.js`. Use the template pattern:
 
+**⚠️ require 路径规则：** `human-like.js` 的 require 路径取决于脚本位置：
+- `scripts/browser/*.js` → `require('./utils/human-like')`
+- `scripts/examples/*.js` → `require('../utils/human-like')`
+
+始终根据脚本文件相对于 `utils/` 目录的实际位置来写 require 路径。
+
 ```javascript
 const { chromium } = require('playwright');
+// ⚠️ 路径根据脚本位置调整（见上方规则）
 const { humanDelay, humanClick, humanType, humanThink, humanBrowse } = require('./utils/human-like');
 
 function discoverCdpUrl() {
-  try {
-    const { execSync } = require('child_process');
-    const ps = execSync("ps aux | grep 'remote-debugging-port' | grep -v grep", { encoding: 'utf8' });
-    const match = ps.match(/remote-debugging-port=(\d+)/);
-    const port = process.env.CDP_PORT || '18800';
-    return `http://127.0.0.1:${port}`;
+  const port = process.env.CDP_PORT || '18800';
+  return `http://127.0.0.1:${port}`;
 }
 
 async function main() {

@@ -9,7 +9,7 @@
 
 const { chromium } = require('playwright');
 const { execSync } = require('child_process');
-const { humanDelay, humanClick, humanType, humanThink, humanBrowse, humanScroll } = require('./utils/human-like');
+const { humanDelay, humanClick, humanType, humanThink, humanBrowse, humanScroll } = require('../utils/human-like');
 
 function discoverCdpUrl() {
   const port = process.env.CDP_PORT || '18800';
