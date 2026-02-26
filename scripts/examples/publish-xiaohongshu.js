@@ -140,7 +140,7 @@ async function main() {
   try {
     // ===== 1. Navigate to publish page =====
     await page.goto('https://creator.xiaohongshu.com/publish/publish?from=homepage&target=image', {
-      waitUntil: 'networkidle',
+      waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
     await humanDelay(2000, 4000);

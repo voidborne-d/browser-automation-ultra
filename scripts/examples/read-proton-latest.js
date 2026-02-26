@@ -43,7 +43,7 @@ async function main() {
   try {
     // 1. Navigate to inbox
     log('Opening inbox...');
-    await page.goto('https://mail.proton.me/u/0/inbox', { waitUntil: 'networkidle', timeout: 30000 });
+    await page.goto('https://mail.proton.me/u/2/inbox', { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(3000);
 
     // 2. Get email list metadata

@@ -37,7 +37,7 @@ async function main() {
 
   try {
     await page.goto('https://www.xiaohongshu.com/notification', {
-      waitUntil: 'networkidle',
+      waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
     await page.waitForTimeout(3000);

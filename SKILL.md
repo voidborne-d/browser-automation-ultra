@@ -21,16 +21,16 @@ No browser download needed — scripts connect to OpenClaw's existing Chrome via
 ## Architecture
 
 ```
-Chrome user-data: ~/.openclaw/browser/openclaw/user-data
-       ↕ shared cookies/login (mutually exclusive CDP)
+Chrome user-data: ~/.openclaw/browser/<profile>/user-data
+       ↕ shared cookies/login (CDP supports multiple clients)
 ┌──────────────┐    ┌──────────────────┐
-│ browser tool │ OR │ Playwright script │
+│ browser tool │ +  │ Playwright script │
 │ (explore)    │    │ (zero token)      │
 └──────────────┘    └──────────────────┘
-       ↕ managed by browser-lock.sh
+  each on separate tabs, coordinated by browser-lock.sh
 ```
 
-Only one CDP client can connect at a time. `browser-lock.sh` handles the mutex.
+Chrome CDP supports multiple concurrent clients. OpenClaw browser tool and Playwright coexist on separate tabs. `browser-lock.sh` prevents multiple Playwright scripts from running simultaneously.
 
 ## Setup
 
@@ -99,7 +99,7 @@ async function main() {
   const page = await context.newPage();
   try {
     // automation here — use human-like functions
-    await page.goto('https://example.com', { waitUntil: 'networkidle', timeout: 30000 });
+    await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
     await humanBrowse(page); // simulate looking at the page
     await humanClick(page, 'button.submit');
     await humanType(page, 'input[name="title"]', 'Hello World');
@@ -128,15 +128,16 @@ main().then(() => process.exit(0)).catch(e => { console.error('❌', e.message);
 
 ## browser-lock.sh
 
-Manages CDP mutex between OpenClaw browser and Playwright scripts.
+Coordinates Playwright scripts — connects to OpenClaw's existing Chrome (no kill/restart). Uses a lock file to prevent multiple scripts from running simultaneously.
 
 ```bash
-./scripts/browser-lock.sh run <script.js> [args]    # acquire → run → release (300s default)
+./scripts/browser-lock.sh run <script.js> [args]    # acquire lock → run → release (300s default)
 ./scripts/browser-lock.sh run --timeout 120 <script> # custom timeout
-./scripts/browser-lock.sh acquire                    # manual: stop OpenClaw browser, start Chrome
-./scripts/browser-lock.sh release                    # manual: kill Chrome, release lock
+./scripts/browser-lock.sh release                    # force release stale lock
 ./scripts/browser-lock.sh status                     # show state
 ```
+
+**Important:** Chrome must already be running (started by OpenClaw). If not, run `openclaw browser start` first.
 
 Lock file: `/tmp/openclaw-browser-<profile>.lock` (per-profile). Stale locks auto-recover.
 

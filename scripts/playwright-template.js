@@ -13,7 +13,6 @@
  */
 
 const { chromium } = require('playwright');
-const { execSync } = require('child_process');
 const {
   humanDelay,
   humanThink,
@@ -55,7 +54,7 @@ async function main() {
     // ===== Your automation here =====
 
     // 1. Navigate
-    await page.goto('https://example.com', { waitUntil: 'networkidle', timeout: 30000 });
+    await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
     await humanDelay(2000, 4000);
     log('Page loaded');
 

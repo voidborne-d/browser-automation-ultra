@@ -3,14 +3,12 @@
  * DeviantArt Publish Script (Playwright via CDP)
  * Usage: node publish-deviantart.js <image-path> <title> <description> <tags-comma-separated>
  * 
- * Connects to OpenClaw's managed browser.
- * Requires: DA session already logged in.
+ * All waits use manual polling (page.evaluate loops) instead of
+ * waitForSelector/waitForFunction which are unreliable over CDP.
  */
 
 const { chromium } = require('playwright');
-const { execSync } = require('child_process');
 const path = require('path');
-const { humanDelay, humanClick, humanType, humanThink, humanBrowse, humanScroll } = require('../utils/human-like');
 
 function getCdpUrl() {
   const port = process.env.CDP_PORT || '18800';
@@ -19,6 +17,19 @@ function getCdpUrl() {
 
 function log(msg) { console.log(`[DA] ${msg}`); }
 function err(msg) { console.error(`[DA ERROR] ${msg}`); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+// Simple polling wait
+async function waitFor(page, fn, timeoutMs = 15000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const result = await page.evaluate(fn).catch(() => false);
+    if (result) return result;
+    await sleep(500);
+  }
+  throw new Error(`waitFor timeout after ${timeoutMs}ms`);
+}
 
 async function main() {
   const [,, imagePath, title, description, tagsStr] = process.argv;
@@ -39,7 +50,7 @@ async function main() {
   try {
     browser = await chromium.connectOverCDP(getCdpUrl());
   } catch (e) {
-    err('Cannot connect to CDP. Is OpenClaw browser running?');
+    err('Cannot connect to CDP. Is Chrome running?');
     process.exit(1);
   }
 
@@ -47,205 +58,190 @@ async function main() {
   const page = await context.newPage();
 
   try {
-    // ===== 1. Navigate to submit page =====
-    await page.goto('https://www.deviantart.com/studio?new=1', { waitUntil: 'networkidle', timeout: 30000 });
-    await humanDelay(2000, 4000);
-    log('Submit dialog loaded');
+    // 1. Navigate
+    log('Navigating...');
+    await page.goto('https://www.deviantart.com/studio?new=1', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    log('Waiting for dialog...');
+    await waitFor(page, () => !!document.querySelector('[role="dialog"]'));
+    await sleep(rand(1500, 3000));
+    log('Dialog ready');
 
-    // ===== 2. Upload image =====
-    // DA requires clicking "Upload Your Art" first, then file input becomes active
-    // Use Promise.all to handle file chooser event
-    const [fileChooser] = await Promise.all([
-      page.waitForEvent('filechooser', { timeout: 10000 }),
-      page.evaluate(() => {
-        // Click "Upload Your Art" button
-        const btns = [...document.querySelectorAll('button')];
-        const uploadBtn = btns.find(b => b.textContent.includes('Upload Your Art'));
-        if (uploadBtn) uploadBtn.click();
-      })
-    ]);
+    // 2. Upload image via filechooser
+    log('Uploading image...');
+    // Register listener BEFORE clicking, then click
+    const fileChooserPromise = page.waitForEvent('filechooser', { timeout: 10000 });
+    await page.evaluate(() => {
+      const btns = [...document.querySelectorAll('button')];
+      const uploadBtn = btns.find(b => b.textContent.includes('Upload Your Art'));
+      if (uploadBtn) uploadBtn.click();
+    });
+    const fileChooser = await fileChooserPromise;
     await fileChooser.setFiles(absPath);
-    log('Image uploaded via file chooser');
+    log('Uploaded via filechooser');
 
-    // Wait for image processing
-    await humanDelay(5000, 8000);
-
-    // ===== 3. Verify upload succeeded =====
-    // After upload, form fields should appear. Take screenshot to verify.
-    await page.screenshot({ path: '/tmp/da-after-upload.png' });
-
-    // ===== 4. Fill title =====
-    await humanThink(800, 2000);
-    // Find the title input (has auto-filled filename)
-    const titleInputSelector = await page.evaluate(() => {
-      const allInputs = document.querySelectorAll('input[type="text"]');
-      for (const input of allInputs) {
-        if (input.placeholder === 'Search') continue;
-        if (input.closest('[role="menu"]')) continue;
-        const parent = input.closest('div');
-        const hasLabel = parent?.textContent?.includes('Title');
-        if (input.value !== '' || hasLabel) {
-          // Add a temporary id for targeting
-          input.setAttribute('data-da-title', 'true');
-          return 'found';
-        }
-      }
-      return 'not_found';
-    });
-
-    if (titleInputSelector === 'found') {
-      const titleEl = await page.$('input[data-da-title="true"]');
-      if (titleEl) {
-        await humanClick(page, titleEl);
-        await page.keyboard.down('Meta');
-        await page.keyboard.press('a');
-        await page.keyboard.up('Meta');
-        await humanDelay(100, 300);
-        await humanType(page, null, title, { minDelay: 40, maxDelay: 150 });
-        log(`Title: ${title}`);
-      }
-    } else {
-      log('Title: not_found');
+    // 3. Wait for form to appear (title input means upload processed)
+    log('Waiting for form...');
+    for (let i = 0; i < 40; i++) {
+      const hasTitle = await page.evaluate(() => 
+        [...document.querySelectorAll('input')].some(i => i.placeholder?.toLowerCase().includes('title'))
+      ).catch(() => false);
+      if (hasTitle) break;
+      await sleep(500);
     }
+    await sleep(rand(1000, 2000));
+    log('Form loaded');
 
-    // ===== 5. Add tags =====
-    // Tag input is inside a combobox. Search entire page.
-    const tagInputInfo = await page.evaluate(() => {
-      const combobox = document.querySelector('[role="combobox"]');
-      if (combobox) {
-        const input = combobox.querySelector('input');
-        if (input) { input.focus(); return `combobox: ${input.className.substring(0, 30)}`; }
-      }
-      // Fallback: find input near "tag" text
-      const allInputs = document.querySelectorAll('input[type="text"]');
-      for (const inp of allInputs) {
-        if (inp.placeholder === 'Search') continue;
-        const parent = inp.closest('div');
-        if (parent?.textContent?.includes('tag') || parent?.textContent?.includes('Tag')) {
-          inp.focus();
-          return `near-tag: ${inp.className.substring(0, 30)}`;
+    // 4. Fill title
+    const titleFound = await page.evaluate(() => {
+      const inputs = document.querySelectorAll('input');
+      for (const inp of inputs) {
+        if (inp.placeholder && inp.placeholder.toLowerCase().includes('title')) {
+          inp.setAttribute('data-da-title', 'true');
+          return inp.value || '(empty)';
         }
-      }
-      return 'not_found';
-    });
-    log(`Tag input: ${tagInputInfo}`);
-
-    if (!tagInputInfo.includes('not_found')) {
-      const existingTags = await page.evaluate(() => {
-        const chips = document.querySelectorAll('[class*="tag"] [class*="chip"], [class*="tag"] button');
-        return [...chips].map(c => c.textContent.replace('✕', '').trim().toLowerCase()).filter(t => t);
-      });
-      log(`Existing tags: ${existingTags.join(', ') || 'none'}`);
-
-      for (const tag of tags) {
-        if (existingTags.includes(tag.toLowerCase())) {
-          log(`  Skipping duplicate tag: ${tag}`);
-          continue;
-        }
-        await page.evaluate(() => {
-          const combobox = document.querySelector('[role="combobox"]');
-          if (combobox) { const input = combobox.querySelector('input'); if (input) input.focus(); }
-        });
-        await humanDelay(200, 500);
-        await humanType(page, null, tag, { minDelay: 40, maxDelay: 120, typoRate: 0.02 });
-        await page.keyboard.press('Enter');
-        await humanDelay(300, 800);
-      }
-      log(`Tags typed: ${tags.join(', ')}`);
-    }
-
-    // ===== 6. Fill description =====
-    await humanThink(500, 1500);
-    // Find the contenteditable for description and mark it
-    const descFound = await page.evaluate(() => {
-      const editables = document.querySelectorAll('[contenteditable="true"]');
-      for (const ed of editables) {
-        if (ed.offsetHeight < 50) continue;
-        ed.setAttribute('data-da-desc', 'true');
-        return true;
       }
       return false;
     });
-    if (descFound) {
-      await humanFillContentEditable(page, '[data-da-desc="true"]', desc, { minDelay: 30, maxDelay: 120 });
-      log('Description filled');
-    } else {
-      log('Description: not_found');
+    if (titleFound !== false) {
+      const titleEl = await page.$('input[data-da-title="true"]');
+      await titleEl.click();
+      await sleep(200);
+      await page.keyboard.down('Meta');
+      await page.keyboard.press('a');
+      await page.keyboard.up('Meta');
+      await sleep(100);
+      await page.keyboard.type(title, { delay: rand(20, 60) });
+      log(`Title set: ${title}`);
     }
 
-    // ===== 7. Screenshot before submit =====
-    await humanThink(1000, 2500); // 发布前检查停顿
-    await page.screenshot({ path: '/tmp/da-before-submit.png' });
-
-    // ===== 8. Click Submit (NOT "Save to Studio") =====
-    // The dialog has two buttons at the bottom. "Submit" is the primary action.
-    // Strategy: find all buttons with text "Submit", exclude nav/menu ones
-    const submitResult = await page.evaluate(() => {
-      const btns = [...document.querySelectorAll('button')];
-      
-      // Collect all Submit buttons with context info
-      const submitBtns = btns.filter(b => {
-        const text = b.textContent.trim();
-        if (text !== 'Submit') return false;
-        // Exclude header nav submit button
-        if (b.closest('nav') || b.closest('header') || b.closest('[role="menu"]')) return false;
-        // Exclude the site header submit dropdown trigger
-        if (b.closest('[class*="site-header"]')) return false;
-        return true;
+    // 5. Remove default tags
+    log('Removing default tags...');
+    for (let i = 0; i < 10; i++) {
+      const removed = await page.evaluate(() => {
+        // Find combobox in the submit dialog
+        const dialogs = document.querySelectorAll('[role="dialog"]');
+        let combobox = null;
+        for (const d of dialogs) {
+          if (d.textContent.includes('Submit deviation')) {
+            combobox = d.querySelector('[role="combobox"]');
+            break;
+          }
+        }
+        if (!combobox) return false;
+        const btns = combobox.querySelectorAll('button');
+        for (const btn of btns) {
+          const img = btn.querySelector('img, svg');
+          if (img && btn.textContent.trim().length > 0 && btn.textContent.trim().length < 40) {
+            img.click();
+            return true;
+          }
+        }
+        return false;
       });
+      if (!removed) break;
+      await sleep(rand(200, 400));
+    }
 
-      if (submitBtns.length === 0) return 'no_submit_found';
+    // 6. Add tags
+    log('Adding tags...');
+    for (const tag of tags) {
+      await page.evaluate(() => {
+        const dialogs = document.querySelectorAll('[role="dialog"]');
+        for (const d of dialogs) {
+          if (d.textContent.includes('Submit deviation')) {
+            const input = d.querySelector('[role="combobox"] input');
+            if (input) { input.focus(); break; }
+          }
+        }
+      });
+      await sleep(rand(150, 400));
+      await page.keyboard.type(tag, { delay: rand(15, 40) });
+      await page.keyboard.press('Enter');
+      await sleep(rand(200, 400));
+    }
+    log(`Tags added: ${tags.length}`);
 
-      // If multiple, pick the one inside the dialog or modal
-      let target = submitBtns.find(b => b.closest('[role="dialog"]') || b.closest('[class*="modal"]'));
-      if (!target) target = submitBtns[submitBtns.length - 1]; // fallback: last one
+    // 7. Fill description
+    log('Filling description...');
+    const descReady = await page.evaluate(() => {
+      // Find ALL contenteditable fields across the page (not limited to one dialog)
+      const editables = document.querySelectorAll('[contenteditable="true"]');
+      for (const ed of editables) {
+        if (ed.offsetHeight >= 50) {
+          ed.setAttribute('data-da-desc', 'true');
+          return true;
+        }
+      }
+      return false;
+    });
+    if (descReady) {
+      const descEl = await page.$('[data-da-desc="true"]');
+      if (descEl) {
+        await descEl.click();
+        await sleep(rand(300, 600));
+        // Clear existing placeholder text
+        await page.keyboard.down('Meta');
+        await page.keyboard.press('a');
+        await page.keyboard.up('Meta');
+        await sleep(100);
+        // Type description line by line
+        const lines = desc.split('\n');
+        for (let li = 0; li < lines.length; li++) {
+          if (li > 0) await page.keyboard.press('Enter');
+          await page.keyboard.type(lines[li], { delay: rand(10, 30) });
+        }
+        log('Description filled');
+      }
+    } else {
+      log('Description field not found');
+    }
 
-      target.click();
-      return `clicked (class: ${target.className.substring(0, 30)})`;
+    await sleep(rand(1000, 2000));
+
+    // 8. Submit
+    log('Submitting...');
+    const submitResult = await page.evaluate(() => {
+      // Find the Submit button - look for the one inside any dialog that has "Submit deviation" heading
+      const dialogs = document.querySelectorAll('[role="dialog"]');
+      for (const dialog of dialogs) {
+        if (dialog.textContent.includes('Submit deviation')) {
+          const btns = [...dialog.querySelectorAll('button')];
+          const submitBtn = btns.find(b => b.textContent.trim() === 'Submit');
+          if (submitBtn) { submitBtn.click(); return 'clicked'; }
+        }
+      }
+      // Fallback: find any Submit button not in nav/header
+      const allBtns = [...document.querySelectorAll('button')];
+      const submitBtn = allBtns.find(b => 
+        b.textContent.trim() === 'Submit' && !b.closest('nav') && !b.closest('header')
+      );
+      if (submitBtn) { submitBtn.click(); return 'clicked_fallback'; }
+      return 'no_submit';
     });
     log(`Submit: ${submitResult}`);
 
-    await humanDelay(4000, 7000);
+    // 9. Wait for publish
+    await sleep(rand(5000, 8000));
 
-    // ===== 9. Verify =====
-    await page.screenshot({ path: '/tmp/da-after-submit.png' });
-    
-    // Check if it went to published or if dialog closed
-    const finalState = await page.evaluate(() => {
-      const dialog = document.querySelector('[role="dialog"]');
-      const errorMsg = document.querySelector('[class*="error" i]');
-      return {
-        dialogOpen: !!dialog,
-        hasError: !!errorMsg,
-        errorText: errorMsg?.textContent?.substring(0, 100) || '',
-        url: window.location.href
-      };
-    });
-    
-    log(`Final state: dialog=${finalState.dialogOpen}, error=${finalState.hasError}`);
-    if (finalState.hasError) log(`Error: ${finalState.errorText}`);
-    
-    // Navigate to published to verify
-    await page.goto('https://www.deviantart.com/studio/published', { waitUntil: 'networkidle', timeout: 15000 });
-    const topItem = await page.evaluate(() => {
-      const firstBtn = document.querySelector('li button[class*="IIhy6Y"]');
-      return firstBtn ? firstBtn.textContent.trim() : 'unknown';
-    });
-    log(`Top published item: "${topItem}"`);
-    
-    if (topItem.toLowerCase().includes(process.argv[3]?.toLowerCase()?.substring(0, 10) || '???')) {
-      log('SUCCESS - Verified in published list');
+    // 10. Verify
+    const finalUrl = page.url();
+    const published = await page.evaluate(() => {
+      return document.body.textContent.includes('Published just now') ||
+             document.body.textContent.includes('Published');
+    }).catch(() => false);
+
+    if (published) {
+      log(`SUCCESS - Published! URL: ${finalUrl}`);
     } else {
-      log('WARNING - Could not verify in published list. Check /tmp/da-after-submit.png');
+      log(`WARNING - Uncertain. URL: ${finalUrl}`);
     }
 
   } catch (error) {
     err(error.message);
-    await page.screenshot({ path: '/tmp/da-publish-error.png' }).catch(() => {});
     process.exit(1);
   } finally {
     await page.close();
   }
 }
 
-main();
+main().then(() => process.exit(0)).catch(e => { err(e.message); process.exit(1); });

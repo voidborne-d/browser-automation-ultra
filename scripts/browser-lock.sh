@@ -1,215 +1,74 @@
 #!/bin/bash
-# browser-lock.sh — OpenClaw browser ↔ Playwright mutex manager
+# browser-lock.sh — Playwright script runner with lock coordination
+#
+# Connects Playwright to OpenClaw's EXISTING Chrome (no kill/restart).
+# Uses a lock file to prevent multiple Playwright scripts from running simultaneously.
+# Chrome CDP supports multiple clients — OpenClaw browser tool and Playwright coexist,
+# each on separate tabs.
 #
 # Usage:
-#   browser-lock.sh acquire                    — stop OpenClaw browser, start standalone Chrome, take lock
-#   browser-lock.sh release                    — kill standalone Chrome, release lock
-#   browser-lock.sh run [--timeout S] <script> [args...]  — acquire → run script → release
-#   browser-lock.sh status                     — show current state
+#   browser-lock.sh run [--timeout S] <script> [args...]  — acquire lock → run → release
+#   browser-lock.sh status                                 — show current state
+#   browser-lock.sh release                                — force release stale lock
 #
 # Environment:
-#   CDP_PORT        (default: 18800) — set to your profile's cdpPort
-#   BROWSER_PROFILE (default: openclaw) — profile name for user-data + lock file
-#   CHROME_BIN  (default: auto-detect)
-#   HEADLESS    (default: auto — headless if no DISPLAY/macOS)
+#   CDP_PORT        (default: 18800) — must match your browser profile's cdpPort
+#   BROWSER_PROFILE (default: openclaw) — profile name for lock file isolation
 
 set -euo pipefail
 
-
 CDP_PORT="${CDP_PORT:-18800}"
 BROWSER_PROFILE="${BROWSER_PROFILE:-openclaw}"
-USER_DATA_DIR="$HOME/.openclaw/browser/$BROWSER_PROFILE/user-data"
 LOCK_FILE="/tmp/openclaw-browser-${BROWSER_PROFILE}.lock"
-PID_FILE="/tmp/openclaw-browser-${BROWSER_PROFILE}.pid"
-
 DEFAULT_TIMEOUT=300  # 5 minutes
 
-# --- Auto-detect Chrome ---
-if [ -z "${CHROME_BIN:-}" ]; then
-  if [ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then
-    CHROME_BIN="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-  elif command -v google-chrome &>/dev/null; then
-    CHROME_BIN="google-chrome"
-  elif command -v chromium-browser &>/dev/null; then
-    CHROME_BIN="chromium-browser"
-  elif command -v chromium &>/dev/null; then
-    CHROME_BIN="chromium"
-  else
-    echo "❌ Chrome not found. Set CHROME_BIN." >&2
-    exit 1
-  fi
-fi
-
-# --- Auto-detect headless ---
-needs_headless() {
-  if [ "${HEADLESS:-}" = "true" ] || [ "${HEADLESS:-}" = "1" ]; then
-    return 0
-  fi
-  if [ "${HEADLESS:-}" = "false" ] || [ "${HEADLESS:-}" = "0" ]; then
-    return 1
-  fi
-  # Auto: headless if no display (Linux without X/Wayland)
-  if [ "$(uname)" = "Linux" ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
-    return 0
-  fi
-  return 1
-}
-
 # --- Lock management ---
-# Lock file format: "PID CHROME_PID TIMESTAMP"
+# Lock file format: "PID TIMESTAMP"
 write_lock() {
-  local chrome_pid="${1:-0}"
-  echo "$$ $chrome_pid $(date +%s)" > "$LOCK_FILE"
-}
-
-read_lock() {
-  # outputs: shell_pid chrome_pid timestamp
-  if [ -f "$LOCK_FILE" ]; then
-    cat "$LOCK_FILE"
-  fi
+  echo "$$ $(date +%s)" > "$LOCK_FILE"
 }
 
 is_lock_alive() {
   if [ ! -f "$LOCK_FILE" ]; then
     return 1
   fi
-  local info
-  info=$(read_lock)
-  local shell_pid chrome_pid timestamp
-  shell_pid=$(echo "$info" | awk '{print $1}')
-  chrome_pid=$(echo "$info" | awk '{print $2}')
-  # Lock is alive if either the shell or chrome process is running
-  if kill -0 "$shell_pid" 2>/dev/null || kill -0 "$chrome_pid" 2>/dev/null; then
-    return 0
-  fi
-  return 1
-}
-
-check_lock_timeout() {
-  if [ ! -f "$LOCK_FILE" ]; then
-    return
-  fi
-  local info
-  info=$(read_lock)
-  local timestamp now age
-  timestamp=$(echo "$info" | awk '{print $3}')
-  if [ -z "$timestamp" ]; then return; fi
-  now=$(date +%s)
-  age=$(( now - timestamp ))
-  if [ "$age" -gt "$DEFAULT_TIMEOUT" ]; then
-    echo "⚠️ Lock is ${age}s old (timeout: ${DEFAULT_TIMEOUT}s), force-releasing..."
-    release
-  fi
-}
-
-kill_cdp_chrome() {
-  local pids
-  pids=$(ps aux | grep "remote-debugging-port=$CDP_PORT" | grep -v grep | awk '{print $2}' || true)
-  if [ -n "$pids" ]; then
-    echo "⏹ Stopping Chrome on CDP port $CDP_PORT (PIDs: $pids)..."
-    echo "$pids" | xargs kill 2>/dev/null || true
-    sleep 1
-    for pid in $pids; do
-      kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
-    done
-  fi
-}
-
-start_chrome() {
-  if curl -s --max-time 1 "http://127.0.0.1:$CDP_PORT/json/version" &>/dev/null; then
-    echo "⚠️ CDP port $CDP_PORT already in use"
-    # Grab the existing Chrome PID for the lock
-    local existing_pid
-    existing_pid=$(ps aux | grep "remote-debugging-port=$CDP_PORT" | grep -v grep | awk '{print $2}' | head -1 || echo 0)
-    echo "$existing_pid" > "$PID_FILE"
-    return 0
-  fi
-
-  local headless_flag=""
-  if needs_headless; then
-    headless_flag="--headless=new"
-    echo "🖥 Headless mode"
-  fi
-
-  echo "🚀 Starting Chrome on CDP port $CDP_PORT..."
-  "$CHROME_BIN" \
-    --remote-debugging-port="$CDP_PORT" \
-    --user-data-dir="$USER_DATA_DIR" \
-    --no-first-run \
-    --no-default-browser-check \
-    --disable-sync \
-    --disable-background-networking \
-    --disable-component-update \
-    --disable-features=Translate,MediaRouter \
-    --disable-session-crashed-bubble \
-    --hide-crash-restore-bubble \
-    --password-store=basic \
-    --disable-blink-features=AutomationControlled \
-    $headless_flag \
-    about:blank &>/dev/null &
-
-  local chrome_pid=$!
-  echo "$chrome_pid" > "$PID_FILE"
-
-  for i in $(seq 1 10); do
-    if curl -s --max-time 1 "http://127.0.0.1:$CDP_PORT/json/version" &>/dev/null; then
-      echo "✅ Chrome ready (PID: $chrome_pid, CDP: $CDP_PORT)"
-      return 0
-    fi
-    sleep 0.5
-  done
-  echo "❌ Chrome failed to start" >&2
-  return 1
+  local shell_pid
+  shell_pid=$(awk '{print $1}' "$LOCK_FILE")
+  kill -0 "$shell_pid" 2>/dev/null
 }
 
 acquire() {
-  # Check existing lock
   if [ -f "$LOCK_FILE" ]; then
     if is_lock_alive; then
-      # Check if it's timed out
-      local info timestamp now age
-      info=$(read_lock)
-      timestamp=$(echo "$info" | awk '{print $3}')
+      local timestamp now age
+      timestamp=$(awk '{print $2}' "$LOCK_FILE")
       now=$(date +%s)
       age=$(( now - ${timestamp:-0} ))
       if [ "$age" -gt "$DEFAULT_TIMEOUT" ]; then
-        echo "⚠️ Lock is ${age}s old (timeout: ${DEFAULT_TIMEOUT}s), force-releasing..."
-        release
+        echo "⚠️ Lock is ${age}s old, force-releasing..."
+        rm -f "$LOCK_FILE"
       else
         echo "❌ Lock held ($(cat "$LOCK_FILE")). Age: ${age}s. Use 'release' to force." >&2
         exit 1
       fi
     else
-      echo "⚠️ Stale lock (processes dead), cleaning..."
+      echo "⚠️ Stale lock, cleaning..."
       rm -f "$LOCK_FILE"
     fi
   fi
 
-  kill_cdp_chrome
-  sleep 1
-  start_chrome
-
-  # Write lock with Chrome PID
-  local chrome_pid
-  chrome_pid=$(cat "$PID_FILE" 2>/dev/null || echo 0)
-  write_lock "$chrome_pid"
+  # Verify Chrome is running on CDP port
+  if ! curl -s --max-time 2 "http://127.0.0.1:$CDP_PORT/json/version" &>/dev/null; then
+    echo "❌ No Chrome on CDP port $CDP_PORT. Start it via OpenClaw: openclaw browser start" >&2
+    exit 1
+  fi
+  echo "✅ Chrome ready (CDP: $CDP_PORT)"
+  write_lock
 }
 
 release() {
-  if [ -f "$PID_FILE" ]; then
-    local pid
-    pid=$(cat "$PID_FILE")
-    if kill -0 "$pid" 2>/dev/null; then
-      echo "⏹ Stopping standalone Chrome (PID: $pid)..."
-      kill "$pid" 2>/dev/null || true
-      sleep 1
-      kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
-    fi
-    rm -f "$PID_FILE"
-  fi
-  kill_cdp_chrome
   rm -f "$LOCK_FILE"
-  echo "🔓 Released. OpenClaw browser can restart via 'browser start'."
+  echo "🔓 Released."
 }
 
 run_script() {
@@ -231,15 +90,16 @@ run_script() {
   local exit_code=0
   echo "▶ Running (timeout: ${timeout}s): node $*"
 
-  # Run with timeout — kill on expiry
+  # Export CDP_PORT so scripts can read it
+  export CDP_PORT
+
+  # Run with timeout
   local script_pid
   node "$@" &
   script_pid=$!
 
-  # Update lock with script PID so liveness checks work
-  local chrome_pid
-  chrome_pid=$(cat "$PID_FILE" 2>/dev/null || echo 0)
-  echo "$script_pid $chrome_pid $(date +%s)" > "$LOCK_FILE"
+  # Update lock with script PID
+  echo "$script_pid $(date +%s)" > "$LOCK_FILE"
 
   # Background watchdog
   (
@@ -268,18 +128,15 @@ run_script() {
 status() {
   echo "--- Browser Lock Status ---"
   if [ -f "$LOCK_FILE" ]; then
-    local info shell_pid chrome_pid timestamp now age
-    info=$(read_lock)
-    shell_pid=$(echo "$info" | awk '{print $1}')
-    chrome_pid=$(echo "$info" | awk '{print $2}')
-    timestamp=$(echo "$info" | awk '{print $3}')
+    local shell_pid timestamp now age
+    shell_pid=$(awk '{print $1}' "$LOCK_FILE")
+    timestamp=$(awk '{print $2}' "$LOCK_FILE")
     now=$(date +%s)
     age=$(( now - ${timestamp:-0} ))
-
     if is_lock_alive; then
-      echo "🔒 Locked (script: $shell_pid, chrome: $chrome_pid, age: ${age}s, timeout: ${DEFAULT_TIMEOUT}s)"
+      echo "🔒 Locked (PID: $shell_pid, age: ${age}s)"
     else
-      echo "⚠️ Stale lock (both PIDs dead, age: ${age}s)"
+      echo "⚠️ Stale lock (PID $shell_pid dead, age: ${age}s)"
     fi
   else
     echo "🔓 Unlocked"
@@ -292,9 +149,8 @@ status() {
 }
 
 case "${1:-status}" in
-  acquire) acquire ;;
   release) release ;;
   run)     shift; run_script "$@" ;;
   status)  status ;;
-  *)       echo "Usage: browser-lock.sh {acquire|release|run [--timeout S] <script.js>|status}" >&2; exit 1 ;;
+  *)       echo "Usage: browser-lock.sh {run [--timeout S] <script.js>|status|release}" >&2; exit 1 ;;
 esac
