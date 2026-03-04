@@ -8,7 +8,7 @@
  */
 
 const { chromium } = require('playwright');
-const { humanDelay, humanClick, humanType, humanThink, humanBrowse } = require('../utils/human-like');
+const { humanDelay, humanClick, humanType, humanThink, humanBrowse } = require('./utils/human-like');
 
 function discoverCdpUrl() {
   const port = process.env.CDP_PORT || '18800';

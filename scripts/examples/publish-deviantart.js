@@ -161,6 +161,23 @@ async function main() {
     }
     log(`Tags added: ${tags.length}`);
 
+    // 6.5 Dismiss tag suggestions dropdown
+    await page.keyboard.press('Escape');
+    await sleep(rand(300, 600));
+    // Click somewhere neutral to ensure focus leaves the tag input
+    await page.evaluate(() => {
+      const dialogs = document.querySelectorAll('[role="dialog"]');
+      for (const d of dialogs) {
+        if (d.textContent.includes('Submit deviation')) {
+          const heading = d.querySelector('h2, h3, [class*="heading"], [class*="title"]');
+          if (heading) { heading.click(); return; }
+          d.click();
+          return;
+        }
+      }
+    });
+    await sleep(rand(300, 600));
+
     // 7. Fill description
     log('Filling description...');
     const descReady = await page.evaluate(() => {

@@ -16,7 +16,7 @@ const { chromium } = require('playwright');
 const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const { humanDelay, humanClick, humanType, humanFillContentEditable, humanBrowse, humanThink } = require('../utils/human-like');
+const { humanDelay, humanClick, humanType, humanFillContentEditable, humanBrowse, humanThink } = require('./utils/human-like');
 
 function getCdpUrl() {
   const port = process.env.CDP_PORT || '18800';
@@ -27,88 +27,66 @@ function log(msg) { console.log(`[XHS] ${msg}`); }
 function err(msg) { console.error(`[XHS ERROR] ${msg}`); }
 
 async function addTopicTag(page, wantedTag) {
-  // Step 1: Click topic button — inserts "#" into editor and shows recommendations
-  const topicBtn = await page.$('button.contentBtn.topic-btn, button:has-text("话题")');
-  if (!topicBtn) return 'no-button';
-  await humanClick(page, topicBtn);
-  await humanDelay(600, 1200);
+  // Strategy (based on social-push workflow):
+  // 1. Focus the .ProseMirror editor
+  // 2. Type "#话题" — triggers topic search dropdown
+  // 3. Wait for dropdown to appear
+  // 4. Press Enter to confirm the first suggestion
+  // 5. If no dropdown appears, clean up with Backspace
 
-  // Step 2: Try to find and click matching tag in recommendation list
-  // The topic button inserted a "#" which the recommendation click will REPLACE.
-  // Check initial visible tags first
-  let matched = await page.evaluate((tag) => {
-    const wrapper = document.querySelector('.recommend-topic-wrapper');
-    if (!wrapper) return false;
-    const spans = wrapper.querySelectorAll('span.tag');
-    for (const span of spans) {
-      const text = span.textContent.trim();
-      if (text === '#' + tag || text === tag) {
-        span.click();
+  const editor = await page.$('.ProseMirror[contenteditable="true"]');
+  if (!editor) return 'no-editor';
+
+  // Focus editor and move cursor to end
+  await editor.click();
+  await humanDelay(200, 400);
+  await page.keyboard.press('End');
+  await humanDelay(100, 200);
+
+  // Type space first to separate from previous content, then #话题
+  await page.keyboard.type(' ', { delay: 50 });
+  await humanDelay(100, 200);
+
+  // Type # to trigger topic mode
+  await page.keyboard.type('#', { delay: 50 });
+  await humanDelay(400, 800);
+
+  // Type the tag name character by character
+  await page.keyboard.type(wantedTag, { delay: 80 + Math.random() * 60 });
+  await humanDelay(1000, 2000); // wait for search dropdown to appear
+
+  // Check if a suggestion dropdown appeared
+  const hasDropdown = await page.evaluate(() => {
+    // Look for any visible suggestion/topic dropdown
+    const candidates = document.querySelectorAll(
+      '.topic-suggest-list, .suggest-topic, [class*="topic-suggest"], ' +
+      '[class*="mention-list"], .tippy-content, [class*="suggestion-list"], ' +
+      '[class*="dropdown"]:not([style*="display: none"])'
+    );
+    for (const el of candidates) {
+      if (el.offsetHeight > 0 && el.querySelectorAll('li, [class*="item"]').length > 0) {
         return true;
       }
     }
     return false;
-  }, wantedTag);
+  });
 
-  if (matched) {
-    await humanDelay(300, 600); // wait for DOM to replace # with topic element
+  if (hasDropdown) {
+    // Press Enter to confirm the first suggestion
+    await page.keyboard.press('Enter');
+    await humanDelay(300, 600);
     return 'matched';
   }
 
-  // Step 3: Expand "更多" and retry
-  const expanded = await page.evaluate(() => {
-    const wrapper = document.querySelector('.recommend-topic-wrapper');
-    if (!wrapper) return false;
-    const moreBtn = [...wrapper.querySelectorAll('span, div')]
-      .find(el => el.textContent.trim() === '更多' && el.offsetHeight > 0);
-    if (moreBtn) { moreBtn.click(); return true; }
-    return false;
-  });
-
-  if (expanded) {
-    await humanDelay(400, 800);
-    matched = await page.evaluate((tag) => {
-      const wrapper = document.querySelector('.recommend-topic-wrapper');
-      if (!wrapper) return false;
-      const spans = wrapper.querySelectorAll('span.tag');
-      for (const span of spans) {
-        const text = span.textContent.trim();
-        if (text === '#' + tag || text === tag) {
-          span.click();
-          return true;
-        }
-      }
-      return false;
-    }, wantedTag);
-
-    if (matched) {
-      await humanDelay(300, 600);
-      return 'matched-expanded';
-    }
+  // No dropdown — clean up: delete what we typed
+  await page.keyboard.press('Escape');
+  await humanDelay(200, 300);
+  const toDelete = wantedTag.length + 2; // +2 for space and #
+  for (let i = 0; i < toDelete; i++) {
+    await page.keyboard.press('Backspace');
+    await humanDelay(20, 50);
   }
-
-  // Step 4: Not found — remove the "#" that the topic button inserted
-  await page.evaluate(() => {
-    const editor = document.querySelector('[contenteditable="true"]');
-    if (!editor) return;
-    // Remove trailing standalone "#" not inside a tiptap-topic
-    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
-    const toClean = [];
-    while (walker.nextNode()) {
-      const node = walker.currentNode;
-      if (node.parentElement.closest('.tiptap-topic')) continue;
-      if (node.textContent.includes('#')) {
-        toClean.push(node);
-      }
-    }
-    toClean.forEach(node => {
-      node.textContent = node.textContent.replace(/#/g, '');
-      if (!node.textContent.trim()) node.remove();
-    });
-    // Also remove any suggestion spans
-    editor.querySelectorAll('.suggestion').forEach(s => s.remove());
-    editor.dispatchEvent(new Event('input', { bubbles: true }));
-  });
+  await humanDelay(200, 400);
 
   return 'not-found';
 }
