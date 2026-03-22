@@ -39,11 +39,20 @@ async function addTopicTag(page, wantedTag) {
   const editor = await page.$('.ProseMirror[contenteditable="true"]');
   if (!editor) return 'no-editor';
 
-  // Focus editor and move cursor to end
+  // Focus editor and move cursor to absolute end of content
+  // End 键只到当前行末尾，Ctrl+End / Cmd+End 才到整个文档末尾
   await editor.click();
   await humanDelay(200, 400);
-  await page.keyboard.press('End');
-  await humanDelay(100, 200);
+
+  // 用 evaluate 将光标移到编辑器最末尾（所有段落之后）
+  await page.evaluate(() => {
+    const editor = document.querySelector('.ProseMirror[contenteditable="true"]');
+    if (!editor) return;
+    const sel = window.getSelection();
+    sel.selectAllChildren(editor);
+    sel.collapseToEnd();
+  });
+  await humanDelay(100, 300);
 
   // Type space first to separate from previous content
   await humanType(page, null, ' ', { minDelay: 40, maxDelay: 80, typoRate: 0 });
