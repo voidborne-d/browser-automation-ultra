@@ -9,6 +9,7 @@
  * - ALWAYS page.close() in finally block
  * - ALWAYS process.exit(0) at end (Playwright keeps event loop)
  * - ALWAYS use human-like functions for all interactions
+ * - ALWAYS apply stealth before creating pages
  * - NEVER use fixed delays, fill(), or element.click()
  */
 
@@ -23,6 +24,7 @@ const {
   humanScroll,
   jitterWait,
 } = require('./utils/human-like');
+const { applyStealthToContext } = require('./utils/stealth');
 
 // ─── CDP Discovery ───
 function discoverCdpUrl() {
@@ -48,6 +50,7 @@ async function main() {
   }
 
   const context = browser.contexts()[0];
+  await applyStealthToContext(context);  // ← stealth: 消除 CDP 指纹痕迹
   const page = await context.newPage();
 
   try {

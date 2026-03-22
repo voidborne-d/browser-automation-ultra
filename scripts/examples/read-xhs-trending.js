@@ -10,6 +10,8 @@
  */
 
 const { chromium } = require('playwright');
+const { humanDelay, humanBrowse, humanScroll, humanClick, humanThink } = require('../utils/human-like');
+const { applyStealthToContext } = require('../utils/stealth');
 
 function getCdpUrl() {
   const port = process.env.CDP_PORT || '18800';
@@ -17,8 +19,6 @@ function getCdpUrl() {
 }
 
 function log(msg) { console.error(`[XHS-TRENDING] ${msg}`); }
-
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function main() {
   let browser;
@@ -30,18 +30,28 @@ async function main() {
   }
 
   const context = browser.contexts()[0];
+  await applyStealthToContext(context);
   const page = await context.newPage();
 
   try {
     log('Navigating to explore page...');
     await page.goto('https://www.xiaohongshu.com/explore', { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await sleep(2000 + Math.random() * 1000);
+    await humanDelay(2500, 5000);
 
-    // Click search box to trigger trending dropdown
+    // 模拟人类先浏览首页
+    await humanBrowse(page, { duration: 3000 });
+
+    // 随机滚动看看内容
+    await humanScroll(page, { scrolls: 2, minPause: 800, maxPause: 2000 });
+    await humanDelay(1000, 2500);
+
+    // 点击搜索框
     log('Clicking search box...');
-    const searchInput = page.locator('#search-input');
-    await searchInput.click();
-    await sleep(1500 + Math.random() * 1000);
+    await humanClick(page, '#search-input');
+    await humanDelay(1500, 3000);
+
+    // 等热搜加载
+    await humanThink(800, 1500);
 
     // Extract trending items
     const items = await page.evaluate(() => {
@@ -53,6 +63,10 @@ async function main() {
     });
 
     log(`Found ${items.length} trending topics`);
+
+    // 看完热搜停一下再走
+    await humanDelay(500, 1500);
+
     console.log(JSON.stringify(items, null, 2));
 
   } finally {

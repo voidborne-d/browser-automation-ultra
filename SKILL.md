@@ -36,8 +36,9 @@ Chrome CDP supports multiple concurrent clients. OpenClaw browser tool and Playw
 
 1. Copy `scripts/browser-lock.sh` to your workspace `scripts/` directory
 2. Copy `scripts/utils/human-like.js` to your workspace `scripts/browser/utils/`
-3. `chmod +x scripts/browser-lock.sh`
-4. Create `scripts/browser/` for your automation scripts
+3. Copy `scripts/utils/stealth.js` to your workspace `scripts/browser/utils/`
+4. `chmod +x scripts/browser-lock.sh`
+5. Create `scripts/browser/` for your automation scripts
 
 ## ⚠️ Multi-Profile: Set Environment Variables BEFORE Running
 
@@ -87,6 +88,7 @@ Convert steps into a script. Save to `scripts/browser/<verb>-<target>.js`. Use t
 const { chromium } = require('playwright');
 // ⚠️ 路径根据脚本位置调整（见上方规则）
 const { humanDelay, humanClick, humanType, humanThink, humanBrowse } = require('./utils/human-like');
+const { applyStealthToContext } = require('./utils/stealth');
 
 function discoverCdpUrl() {
   const port = process.env.CDP_PORT || '18800';
@@ -96,6 +98,7 @@ function discoverCdpUrl() {
 async function main() {
   const browser = await chromium.connectOverCDP(discoverCdpUrl());
   const context = browser.contexts()[0]; // reuse existing context (cookies/login)
+  await applyStealthToContext(context);  // ← remove CDP fingerprint traces
   const page = await context.newPage();
   try {
     // automation here — use human-like functions
@@ -143,9 +146,21 @@ Lock file: `/tmp/openclaw-browser-<profile>.lock` (per-profile). Stale locks aut
 
 ## Anti-Detection Rules (MANDATORY)
 
-All scripts **must** use `human-like.js`. See [references/anti-detection.md](references/anti-detection.md) for the full rule set.
+All scripts **must** use `human-like.js` + `stealth.js`. See [references/anti-detection.md](references/anti-detection.md) for the full rule set.
 
-Summary of critical rules:
+### Layer 1: CDP Fingerprint Stealth
+
+Apply `stealth.js` to remove traces left by the CDP connection (navigator.webdriver, Playwright globals, etc.):
+
+```javascript
+const { applyStealthToContext } = require('./utils/stealth');
+const context = browser.contexts()[0];
+await applyStealthToContext(context);  // BEFORE context.newPage()
+```
+
+Since we use `connectOverCDP` on a real Chrome (not Playwright's bundled Chromium), the base fingerprint is already clean. Stealth only patches what CDP exposes.
+
+### Layer 2: Human-Like Behavior
 
 | ❌ Banned | ✅ Required |
 |-----------|------------|
@@ -158,7 +173,9 @@ Summary of critical rules:
 
 **Exception:** `setInputFiles()` for file uploads is allowed (no human simulation possible), but add random delays before/after.
 
-## human-like.js API
+## Module API
+
+### human-like.js
 
 | Function | Purpose |
 |----------|---------|
@@ -170,6 +187,16 @@ Summary of critical rules:
 | `humanBrowse(page, opts)` | Simulate page reading (scroll + mouse wander, 2-5s) |
 | `humanScroll(page, opts)` | Random scroll with occasional reverse |
 | `jitterWait(minMin, maxMin)` | Random delay in minutes for cron tasks |
+
+### stealth.js
+
+| Function | Purpose |
+|----------|---------|
+| `applyStealthToContext(context)` | Patch context — all new pages inherit stealth. **Call before `newPage()`** |
+| `applyStealthToPage(page)` | Patch single page (fallback). **Call before `goto()`** |
+| `verifyStealthStatus(page)` | Debug: returns detection status object |
+
+Stealth patches: `navigator.webdriver`, `navigator.plugins`, `navigator.languages`, `chrome.runtime`, Playwright/ChromeDriver globals, permissions API, connection RTT, WebGL renderer.
 
 ## Script Naming Convention
 

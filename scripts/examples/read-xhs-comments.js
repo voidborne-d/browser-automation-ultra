@@ -11,6 +11,8 @@
 
 const { chromium } = require('playwright');
 const { execSync } = require('child_process');
+const { humanDelay, humanBrowse, humanScroll, humanClick } = require('../utils/human-like');
+const { applyStealthToContext } = require('../utils/stealth');
 
 function getCdpUrl() {
   const port = process.env.CDP_PORT || '18800';
@@ -33,6 +35,7 @@ async function main() {
   }
 
   const context = browser.contexts()[0];
+  await applyStealthToContext(context);
   const page = await context.newPage();
 
   try {
@@ -40,8 +43,15 @@ async function main() {
       waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
-    await page.waitForTimeout(3000);
+    await humanDelay(2500, 5000);
     log('Notification page loaded');
+
+    // 模拟人类浏览通知页面
+    await humanBrowse(page, { duration: 3000 });
+
+    // 随机滚动看看通知
+    await humanScroll(page, { scrolls: 2, minPause: 800, maxPause: 2000 });
+    await humanDelay(1000, 2000);
 
     const comments = await page.evaluate((maxItems) => {
       const results = [];
@@ -56,13 +66,11 @@ async function main() {
         const contentEl = main.querySelector('.interaction-content');
         const hintEl = main.querySelector('.interaction-hint span:first-child');
         const replyBtn = main.querySelector('.action-reply');
-        const noteImg = main.parentElement?.querySelector('img[class*="cover"], img[class*="note"]');
 
-        // Skip non-comment notifications (e.g. nav items without interaction-content)
+        // Skip non-comment notifications
         if (!contentEl && !hintEl) return;
 
         const type = hintEl?.textContent?.trim() || '';
-        // Only include comment/reply notifications
         if (!type.includes('评论') && !type.includes('回复')) return;
 
         results.push({
@@ -73,12 +81,11 @@ async function main() {
           comment: contentEl?.textContent?.trim() || '',
           time: timeEl?.textContent?.trim() || '',
           hasReplyBtn: !!replyBtn,
-          // replyBtnIndex: index among all .action-reply buttons (for reply script)
           _mainIndex: i,
         });
       });
 
-      // Calculate reply button indices for each item that has one
+      // Calculate reply button indices
       const allReplyBtns = document.querySelectorAll('.action-reply');
       const btnToMainIndex = [];
       allReplyBtns.forEach((btn) => {
@@ -101,6 +108,12 @@ async function main() {
     }, limit);
 
     log(`Found ${comments.length} comment(s)`);
+
+    // 读完再随便看看，模拟真人
+    await humanDelay(500, 1500);
+    await humanScroll(page, { scrolls: 1, minPause: 500, maxPause: 1200 });
+    await humanDelay(800, 2000);
+
     console.log(JSON.stringify(comments, null, 2));
 
   } catch (error) {

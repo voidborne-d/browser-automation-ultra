@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
  * 小红书创作平台发布脚本 (Playwright via CDP)
- * Usage: node publish-xiaohongshu.js <image-path> <title> <description> [tags-comma-separated]
+ * Usage: node publish-xiaohongshu.js <image-paths> <title> <description> [tags-comma-separated]
  *
+ * image-paths: 单张图片路径，或多张用 | 分隔（如 "a.png|b.png|c.png"）
  * description: 正文内容（不含话题标签）
  * tags: 可选，逗号分隔的话题关键词，如 "抽象艺术,数字艺术,当代艺术"
  *       脚本通过话题按钮触发推荐列表，再点击匹配项关联真实话题。
@@ -16,7 +17,8 @@ const { chromium } = require('playwright');
 const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const { humanDelay, humanClick, humanType, humanFillContentEditable, humanBrowse, humanThink } = require('./utils/human-like');
+const { humanDelay, humanClick, humanType, humanFillContentEditable, humanBrowse, humanThink, humanScroll, jitterWait } = require('../utils/human-like');
+const { applyStealthToContext } = require('../utils/stealth');
 
 function getCdpUrl() {
   const port = process.env.CDP_PORT || '18800';
@@ -43,17 +45,17 @@ async function addTopicTag(page, wantedTag) {
   await page.keyboard.press('End');
   await humanDelay(100, 200);
 
-  // Type space first to separate from previous content, then #话题
-  await page.keyboard.type(' ', { delay: 50 });
-  await humanDelay(100, 200);
+  // Type space first to separate from previous content
+  await humanType(page, null, ' ', { minDelay: 40, maxDelay: 80, typoRate: 0 });
+  await humanDelay(200, 500);
 
   // Type # to trigger topic mode
-  await page.keyboard.type('#', { delay: 50 });
-  await humanDelay(400, 800);
+  await humanType(page, null, '#', { minDelay: 40, maxDelay: 80, typoRate: 0 });
+  await humanDelay(500, 1000);
 
-  // Type the tag name character by character
-  await page.keyboard.type(wantedTag, { delay: 80 + Math.random() * 60 });
-  await humanDelay(1000, 2000); // wait for search dropdown to appear
+  // Type the tag name character by character with human-like typing
+  await humanType(page, null, wantedTag, { minDelay: 70, maxDelay: 180, typoRate: 0 });
+  await humanDelay(1200, 2500); // wait for search dropdown to appear
 
   // Check if a suggestion dropdown appeared
   const hasDropdown = await page.evaluate(() => {
@@ -92,23 +94,32 @@ async function addTopicTag(page, wantedTag) {
 }
 
 async function main() {
-  const [,, imagePath, title, description, tagsStr] = process.argv;
-  if (!imagePath || !title) {
-    err('Usage: node publish-xiaohongshu.js <image> <title> [description] [tags]');
+  const [,, imagePathArg, title, description, tagsStr] = process.argv;
+  if (!imagePathArg || !title) {
+    err('Usage: node publish-xiaohongshu.js <image|img1|img2|img3> <title> [description] [tags]');
     process.exit(1);
   }
 
-  const absPath = path.resolve(imagePath);
-  if (!fs.existsSync(absPath)) {
-    err(`File not found: ${absPath}`);
-    process.exit(1);
+  // Support multiple images separated by |
+  const imagePaths = imagePathArg.split('|').map(p => p.trim()).filter(Boolean);
+  const absPaths = imagePaths.map(p => path.resolve(p));
+  for (const ap of absPaths) {
+    if (!fs.existsSync(ap)) {
+      err(`File not found: ${ap}`);
+      process.exit(1);
+    }
   }
   const desc = description || '';
   const wantedTags = tagsStr ? tagsStr.split(',').map(t => t.trim()).filter(Boolean) : [];
 
   log(`Publishing: "${title}"`);
-  log(`Image: ${absPath}`);
+  log(`Images (${absPaths.length}): ${absPaths.map(p => path.basename(p)).join(', ')}`);
   if (wantedTags.length) log(`Wanted tags: ${wantedTags.join(', ')}`);
+
+  // 发布前随机等待 1-5 分钟，避免固定时间发布
+  if (process.env.XHS_NO_JITTER !== '1') {
+    await jitterWait(1, 5);
+  }
 
   let browser;
   try {
@@ -119,6 +130,7 @@ async function main() {
   }
 
   const context = browser.contexts()[0];
+  await applyStealthToContext(context);
   const page = await context.newPage();
 
   try {
@@ -130,15 +142,18 @@ async function main() {
     await humanDelay(2000, 4000);
     log('Publish page loaded');
 
-    // 模拟人类浏览页面
-    await humanBrowse(page, { duration: 2000 });
+    // 模拟人类浏览页面（先看看发布页面）
+    await humanBrowse(page, { duration: 3000 });
+    await humanScroll(page, { scrolls: 1, minPause: 500, maxPause: 1200 });
 
-    // ===== 2. Upload image =====
+    // ===== 2. Upload image(s) =====
     const fileInput = await page.$('input[type="file"]');
     if (!fileInput) { err('File input not found'); process.exit(1); }
-    await fileInput.setInputFiles(absPath);
-    log('Image uploaded');
-    await humanDelay(4000, 7000);
+    await fileInput.setInputFiles(absPaths);
+    log(`${absPaths.length} image(s) uploaded`);
+    // More images need more time to process
+    const uploadWait = absPaths.length > 1 ? [6000, 10000] : [4000, 7000];
+    await humanDelay(...uploadWait);
 
     // ===== 3. Fill title =====
     const titleInput = await page.$('input[placeholder*="标题"]');
@@ -199,12 +214,12 @@ async function main() {
       if (origCheckbox) {
         const checked = await origCheckbox.isChecked();
         if (!checked) {
-          await origCheckbox.click();
-          await page.waitForTimeout(1000);
+          await humanClick(page, origCheckbox);
+          await humanDelay(1000, 2000);
           const agreeEl = await page.$('text=我已阅读并同意');
-          if (agreeEl) { await agreeEl.click(); await page.waitForTimeout(500); }
+          if (agreeEl) { await humanClick(page, agreeEl); await humanDelay(500, 1000); }
           const declareBtn = await page.$('button:has-text("声明原创"):not([disabled])');
-          if (declareBtn) { await declareBtn.click(); log('Original declaration ✅'); await page.waitForTimeout(1000); }
+          if (declareBtn) { await humanClick(page, declareBtn); log('Original declaration ✅'); await humanDelay(1000, 2000); }
         }
       }
     } catch (e) { log('Original declaration skipped'); }
@@ -219,14 +234,25 @@ async function main() {
     await humanDelay(4000, 7000);
 
     const currentUrl = page.url();
+    // After successful publish, XHS resets to blank upload page (URL stays /publish/publish)
+    // Check if the form was reset (no image/title present) as a success indicator
+    const formState = await page.evaluate(() => {
+      const titleInput = document.querySelector('input[placeholder*="标题"]') || document.querySelector('.c-input_inner');
+      const hasTitle = titleInput && titleInput.value && titleInput.value.length > 0;
+      const hasImage = !!document.querySelector('.img-container img, .c-image_inner, [class*="coverImg"]');
+      const errEls = [...document.querySelectorAll('[class*="error"],[class*="toast"],[class*="warning"]')].map(e => e.textContent).filter(Boolean);
+      return { hasTitle, hasImage, errors: errEls };
+    });
+
     if (!currentUrl.includes('/publish/publish')) {
+      log('SUCCESS ✅ (navigated away)');
+    } else if (formState.errors.length > 0) {
+      err(formState.errors.join('; '));
+    } else if (!formState.hasTitle && !formState.hasImage) {
+      // Form was reset to blank = publish succeeded
       log('SUCCESS ✅');
     } else {
-      const errText = await page.evaluate(() =>
-        [...document.querySelectorAll('[class*="error"],[class*="toast"]')].map(e => e.textContent).join('; ')
-      );
-      if (errText) err(errText);
-      else log('WARNING - Still on publish page');
+      log('WARNING - Still on publish page (form not reset)');
     }
     await page.screenshot({ path: '/tmp/xhs-after-publish.png' });
 

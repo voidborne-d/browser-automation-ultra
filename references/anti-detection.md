@@ -2,7 +2,40 @@
 
 ## Why This Matters
 
-Platforms like Xiaohongshu, DeviantArt, Pinterest, Behance use behavioral analysis to detect automation. Violations result in shadow bans, captcha loops, or account suspension.
+Platforms like Xiaohongshu, DeviantArt, Pinterest, Behance use behavioral analysis and fingerprint detection to identify automation. Violations result in shadow bans, captcha loops, or account suspension.
+
+## Two Layers of Defense
+
+### Layer 1: Stealth (CDP Fingerprint Removal)
+
+`stealth.js` removes traces left by the CDP connection itself. Since we use `connectOverCDP` to control a **real Chrome** (not Playwright's bundled Chromium), the base fingerprint (UA, WebGL, Canvas, fonts, TLS) is already clean. Stealth only patches what CDP exposes:
+
+| What it fixes | How |
+|---------------|-----|
+| `navigator.webdriver = true` | `defineProperty` override + CDP `addScriptToEvaluateOnNewDocument` |
+| Empty `navigator.plugins` | Fake 3 standard Chrome plugins (fallback only) |
+| Empty `navigator.languages` | Set to `['zh-CN', 'zh', 'en-US', 'en']` |
+| Playwright globals (`__playwright`, `__pw_manual`) | Delete from `window` |
+| ChromeDriver variables (`cdc_*`) | Delete from `window` |
+| Missing `chrome.runtime` | Create stub object |
+| Permissions API anomalies | Fix notification permission query |
+| `navigator.connection.rtt` | Randomize 50-150ms |
+| WebGL vendor/renderer empty | Fallback to real Apple M1 values |
+
+**Usage:**
+```javascript
+const { applyStealthToContext } = require('./utils/stealth');
+
+const context = browser.contexts()[0];
+await applyStealthToContext(context);  // BEFORE creating pages
+const page = await context.newPage();
+```
+
+Apply to context (not page) so all new pages inherit stealth automatically.
+
+### Layer 2: Human-Like Behavior
+
+`human-like.js` makes all interactions look human. This is the behavioral layer.
 
 ## Rules
 
@@ -51,7 +84,7 @@ await page.goto(url);
 await page.fill('input', text); // too fast
 
 // ✅ ALWAYS — simulate human reading the page first
-await page.goto(url, { waitUntil: 'networkidle' });
+await page.goto(url, { waitUntil: 'domcontentloaded' });
 await humanDelay(2000, 4000);  // page load settling
 await humanBrowse(page);       // scroll + mouse wander
 await humanThink(800, 2000);   // pause before action
@@ -67,6 +100,9 @@ await humanType(page, 'input', text);
 // ✅ ALWAYS — add random offset at script start
 const { jitterWait } = require('./utils/human-like');
 await jitterWait(1, 15); // random 1-15 minute delay
+
+// ✅ ALSO — use OpenClaw cron stagger
+// openclaw cron edit <id> --stagger 30m
 ```
 
 ### 6. page.evaluate() Usage
@@ -97,6 +133,26 @@ await humanThink(500, 1500);
 await fileInput.setInputFiles(imagePath);
 await humanDelay(3000, 6000); // wait for upload processing
 ```
+
+### 8. Stealth Must Be Applied Before Navigation
+
+```javascript
+// ❌ WRONG — stealth after page creation has no effect on initial load
+const page = await context.newPage();
+await applyStealthToPage(page);
+await page.goto(url); // first load already exposed webdriver=true
+
+// ✅ RIGHT — stealth on context before page creation
+await applyStealthToContext(context);
+const page = await context.newPage();
+await page.goto(url); // clean from the start
+```
+
+## What stealth.js CANNOT fix
+
+- **Server-side behavior analysis**: publishing frequency, content patterns, login IP patterns — these are account-level signals, not browser fingerprint issues
+- **CDP event subscription detection**: if a site detects that `Runtime.enable` or `Page.enable` CDP domains are active, there's no way to hide this from inside the page
+- **TLS fingerprint**: the real Chrome's TLS stack is already genuine, so this is not a concern for `connectOverCDP`
 
 ## human-like.js Function Reference
 
@@ -139,3 +195,26 @@ Waits random minutes. Logs the wait time. Returns ms waited.
 
 ### jitterSchedule(baseMinutes, range) → number
 Returns baseMinutes ± range (for schedule calculation, not waiting).
+
+## stealth.js Function Reference
+
+### applyStealthToContext(context) → Promise<void>
+Apply stealth patches to a BrowserContext. All pages created from this context will inherit stealth. **Call before `context.newPage()`.**
+
+### applyStealthToPage(page) → Promise<void>
+Apply stealth to a single page (CDP session + addInitScript). Use when you can't apply to context. **Call before `page.goto()`.**
+
+### verifyStealthStatus(page) → Promise<object>
+Debug helper. Returns detection status:
+```json
+{
+  "webdriver": undefined,
+  "webdriverDefined": false,
+  "pluginCount": 3,
+  "languages": ["zh-CN", "zh", "en-US", "en"],
+  "chrome": true,
+  "chromeRuntime": true,
+  "playwrightGlobals": [],
+  "cdcKeys": []
+}
+```
