@@ -103,15 +103,84 @@ const STEALTH_INIT_SCRIPT = `
   }
 
   // ═══ 6. 修复 chrome.runtime ═══
-  // 真实 Chrome 有 chrome.runtime，某些检测会检查其存在性
+  // 真实 Chrome 有完整的 chrome.runtime，无扩展时也存在基础结构
+  // 反爬脚本常检查 chrome.runtime 是否存在且功能完整
   if (!window.chrome) {
     window.chrome = {};
   }
   if (!window.chrome.runtime) {
-    window.chrome.runtime = {
-      connect: () => {},
-      sendMessage: () => {},
+    // 模拟真实 Chrome 的 runtime 对象（无扩展安装时的状态）
+    const runtime = {
+      // 标准属性
       id: undefined,
+      
+      // 标准方法 — 返回 undefined 或抛出标准错误
+      connect: function() {
+        throw new Error('Could not establish connection. Receiving end does not exist.');
+      },
+      sendMessage: function() {
+        throw new Error('Could not establish connection. Receiving end does not exist.');
+      },
+      getURL: function(path) { return ''; },
+      getManifest: function() { return undefined; },
+      
+      // 事件对象（最常被检测）
+      onConnect: {
+        addListener: function() {},
+        removeListener: function() {},
+        hasListener: function() { return false; },
+      },
+      onMessage: {
+        addListener: function() {},
+        removeListener: function() {},
+        hasListener: function() { return false; },
+      },
+      onInstalled: {
+        addListener: function() {},
+        removeListener: function() {},
+        hasListener: function() { return false; },
+      },
+    };
+    
+    // 让所有方法的 toString 看起来像原生代码
+    const nativeToString = 'function () { [native code] }';
+    for (const key of Object.keys(runtime)) {
+      if (typeof runtime[key] === 'function') {
+        runtime[key].toString = () => nativeToString;
+      }
+    }
+    
+    window.chrome.runtime = runtime;
+  }
+  
+  // 确保 chrome.csi 和 chrome.loadTimes 存在（真实 Chrome 有这些）
+  if (!window.chrome.csi) {
+    window.chrome.csi = function() {
+      return {
+        startE: Date.now(),
+        onloadT: Date.now(),
+        pageT: Math.random() * 1000 + 500,
+        tran: 15,
+      };
+    };
+  }
+  if (!window.chrome.loadTimes) {
+    window.chrome.loadTimes = function() {
+      return {
+        commitLoadTime: Date.now() / 1000,
+        connectionInfo: 'h2',
+        finishDocumentLoadTime: Date.now() / 1000,
+        finishLoadTime: Date.now() / 1000,
+        firstPaintAfterLoadTime: 0,
+        firstPaintTime: Date.now() / 1000,
+        navigationType: 'Other',
+        npnNegotiatedProtocol: 'h2',
+        requestTime: Date.now() / 1000 - 0.5,
+        startLoadTime: Date.now() / 1000 - 0.5,
+        wasAlternateProtocolAvailable: false,
+        wasFetchedViaSpdy: true,
+        wasNpnNegotiated: true,
+      };
     };
   }
 
@@ -124,15 +193,31 @@ const STEALTH_INIT_SCRIPT = `
   // CDP 的 Runtime.enable 会影响 console 行为
   // 这里不做处理，因为可能干扰正常调试
 
-  // ═══ 9. 伪造 connection 信息 ═══
-  // 让 navigator.connection 看起来像正常用户
+  // ═══ 9. 修复 connection 信息 ═══
+  // rtt=0 是自动化环境的典型特征，真实用户通常 50-300ms
+  // 即使移除了 --disable-background-networking，初始值可能仍为 0
   if (navigator.connection) {
-    try {
-      Object.defineProperty(navigator.connection, 'rtt', {
-        get: () => 50 + Math.floor(Math.random() * 100), // 50-150ms
-        configurable: true,
-      });
-    } catch (e) {}
+    const originalRtt = navigator.connection.rtt;
+    if (originalRtt === 0 || originalRtt === undefined) {
+      try {
+        Object.defineProperty(navigator.connection, 'rtt', {
+          get: () => 50 + Math.floor(Math.random() * 100), // 50-150ms
+          configurable: true,
+          enumerable: true,
+        });
+      } catch (e) {}
+    }
+    // downlink=10 固定值也可疑，加点抖动
+    const originalDownlink = navigator.connection.downlink;
+    if (originalDownlink === 10) {
+      try {
+        Object.defineProperty(navigator.connection, 'downlink', {
+          get: () => 5 + Math.random() * 10, // 5-15 Mbps
+          configurable: true,
+          enumerable: true,
+        });
+      } catch (e) {}
+    }
   }
 
   // ═══ 10. WebGL vendor/renderer ═══

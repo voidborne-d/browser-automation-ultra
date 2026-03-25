@@ -39,6 +39,7 @@ Chrome CDP supports multiple concurrent clients. OpenClaw browser tool and Playw
 3. Copy `scripts/utils/stealth.js` to your workspace `scripts/browser/utils/`
 4. `chmod +x scripts/browser-lock.sh`
 5. Create `scripts/browser/` for your automation scripts
+6. **Run `scripts/patch-chrome-args.sh`** to remove automation-revealing Chrome launch flags (re-run after OpenClaw updates)
 
 ## ⚠️ Multi-Profile: Set Environment Variables BEFORE Running
 
@@ -196,7 +197,19 @@ Since we use `connectOverCDP` on a real Chrome (not Playwright's bundled Chromiu
 | `applyStealthToPage(page)` | Patch single page (fallback). **Call before `goto()`** |
 | `verifyStealthStatus(page)` | Debug: returns detection status object |
 
-Stealth patches: `navigator.webdriver`, `navigator.plugins`, `navigator.languages`, `chrome.runtime`, Playwright/ChromeDriver globals, permissions API, connection RTT, WebGL renderer.
+Stealth patches: `navigator.webdriver`, `navigator.plugins`, `navigator.languages`, `chrome.runtime` (full stub with events), `chrome.csi`/`chrome.loadTimes`, Playwright/ChromeDriver globals, permissions API, `connection.rtt` (randomized 50-150ms), `connection.downlink` (randomized 5-15Mbps), WebGL renderer.
+
+### patch-chrome-args.sh
+
+Removes automation-revealing Chrome launch flags from OpenClaw source files. Must re-run after OpenClaw updates.
+
+```bash
+./scripts/patch-chrome-args.sh
+openclaw gateway restart
+openclaw browser stop && openclaw browser start
+```
+
+Removes: `--disable-background-networking` (causes rtt=0), `--disable-session-crashed-bubble`, `--hide-crash-restore-bubble`.
 
 ## Script Naming Convention
 

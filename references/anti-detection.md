@@ -148,6 +148,51 @@ const page = await context.newPage();
 await page.goto(url); // clean from the start
 ```
 
+## Chrome Launch Args Patch (IMPORTANT)
+
+OpenClaw launches Chrome with several flags that leave detectable fingerprints:
+
+| Flag | Problem | Detection |
+|------|---------|-----------|
+| `--disable-background-networking` | `navigator.connection.rtt = 0` | Real users have rtt 50-300ms; rtt=0 is a classic automation signature |
+| `--disable-session-crashed-bubble` | Automation tool fingerprint | Combination of disabled UI elements signals automation |
+| `--hide-crash-restore-bubble` | Automation tool fingerprint | Same as above |
+
+**Fix:** Run `scripts/patch-chrome-args.sh` to remove these flags from OpenClaw's source files. Then restart Gateway + Chrome.
+
+```bash
+./scripts/patch-chrome-args.sh
+openclaw gateway restart
+openclaw browser --browser-profile openclaw stop
+openclaw browser --browser-profile openclaw start
+```
+
+⚠️ This patch must be re-applied after every OpenClaw update (`npm update -g openclaw`).
+
+## What stealth.js Fixes (Full List)
+
+### JS-Level Patches (via addInitScript)
+| What | How | Why |
+|------|-----|-----|
+| `navigator.webdriver` | defineProperty override + CDP double-patch | Most common bot detection check |
+| `navigator.plugins` empty | Fake 3 standard Chrome plugins (fallback) | Empty plugins = headless |
+| `navigator.languages` empty | Set to zh-CN/zh/en-US/en | Missing languages = automation |
+| Playwright globals | Delete `__playwright`, `__pw_manual`, etc. | Direct automation detection |
+| ChromeDriver variables | Delete `cdc_*` prefix vars | ChromeDriver detection |
+| `chrome.runtime` missing | Full runtime stub with connect/sendMessage/events | Anti-crawl scripts check runtime completeness |
+| `chrome.csi` / `chrome.loadTimes` | Stub functions returning realistic values | Missing = not real Chrome |
+| Permissions API | Fix notification permission query | Anomalous permission state = automation |
+| `connection.rtt = 0` | Override to 50-150ms random | rtt=0 after removing --disable-background-networking flag |
+| `connection.downlink = 10` fixed | Override to 5-15 Mbps random | Fixed value is suspicious |
+| WebGL vendor/renderer | Fallback to real Apple values | Empty = headless |
+
+### Chrome Launch Args Patch (via patch-chrome-args.sh)
+| Removed Flag | Effect |
+|---|---|
+| `--disable-background-networking` | Chrome now samples real network quality → rtt > 0 |
+| `--disable-session-crashed-bubble` | Normal Chrome crash UI behavior restored |
+| `--hide-crash-restore-bubble` | Normal Chrome restore UI behavior restored |
+
 ## What stealth.js CANNOT fix
 
 - **Server-side behavior analysis**: publishing frequency, content patterns, login IP patterns — these are account-level signals, not browser fingerprint issues
